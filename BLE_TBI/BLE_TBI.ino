@@ -2,7 +2,7 @@
 #include "LEDControl.h"
 #include <math.h>
 
-#define DEBUG_MODE true
+#define DEBUG_MODE false
 #if DEBUG_MODE
   #define DEBUG_PRINT(x)  Serial.print(x)
   #define DEBUG_PRINTLN(x)  Serial.println(x)
@@ -19,7 +19,7 @@ float t = 0; // for simulating fake data
 uint8_t blePacket[240];  // 10 samples × 24 bytes/sample
 int sampleIndex = 0;
 unsigned long lastSampleTime = 0;
-const unsigned long sampleInterval = 1; // 1 ms = 1 kHz
+const unsigned long sampleInterval = 5; // 1 ms = 1 kHz
 
 // Define the official Generic Health Sensor service
 BLEService sensorService("1840");
@@ -135,20 +135,20 @@ void loop() {
 
       sampleIndex++;
 
-      if (sampleIndex == 10) {
+      if (sampleIndex == 10 && datawrite) {
         dataChar.writeValue(blePacket, 240);
         sampleIndex = 0;
       }
     }
   }
 
-  // // Loop speed
-  // count++;
-  // if (micros() - startTime >= 1000000) { // loops per second
-  //   DEBUG_PRINTLN(count);
-  //   count = 0;
-  //   startTime = micros();
-  // }
+  // Loop speed
+  count++;
+  if (micros() - startTime >= 1000000) { // loops per second
+    DEBUG_PRINTLN(count);
+    count = 0;
+    startTime = micros();
+  }
 }
 
 void processCommand(char* buf){

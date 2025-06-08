@@ -1,14 +1,15 @@
 #include "ADS129X.h"
 #include <SPI.h>
+#include "mbed.h"
 
-// #define DEBUG_MODE true
-// #if DEBUG_MODE
-//   #define DEBUG_PRINT(x)  Serial.print(x)
-//   #define DEBUG_PRINTLN(x)  Serial.println(x)
-// #else
-//   #define DEBUG_PRINT(x)
-//   #define DEBUG_PRINTLN(x)
-// #endif
+#define DEBUG_MODE true
+#if DEBUG_MODE
+  #define DEBUG_PRINT(x)  Serial.print(x)
+  #define DEBUG_PRINTLN(x)  Serial.println(x)
+#else
+  #define DEBUG_PRINT(x)
+  #define DEBUG_PRINTLN(x)
+#endif
 
 /* ADS129X pins */
 const int ADS_PWDN = 10;
@@ -16,6 +17,7 @@ const int ADS_RESET  = 9;
 const int ADS_START  = 8;
 const int ADS_DRDY = 2;
 const int ADS_CS = 7;
+const int ADS_CLK = A1;
 
 int fourbfiveb[] = {
 	0b11110, // Hex data 0
@@ -39,7 +41,8 @@ int fourbfiveb[] = {
 #define encode4B5B(x) (fourbfiveb[x&0x0F])
 #define HIGH_NIBBLE(x) (x>>4)
 #define LOW_NIBBLE(x) (x&0x0F)
-#define LED LEDR
+#define LED LEDG
+// #define ADS129X_POLLING
 
 /*uint32_t fourbfiveb[256] = {
   0x1e1e, 0x1e09, 0x1e14, 0x1e15, 0x1e0a, 0x1e0b, 0x1e0e, 0x1e0f,
@@ -80,57 +83,77 @@ int fourbfiveb[] = {
 
 ADS129X ADS = ADS129X(ADS_DRDY, ADS_CS);
 
-// void setup() {
-//   pinMode(LED_BUILTIN, OUTPUT);
-//   Serial.begin(115200);
-//   while (!Serial);  // allow USB to enumerate (only on native USB boards)
+// For ADS external clk
+#define SAMPLES_PER_SECOND  (4000000)
+#define PPI_CHANNEL_T4      (7)
 
-//   Serial.println("Initilise ADS");
-//   // THEN initialize SPI / ADS:
-//   // SPI.begin();
-//   ADS.BEGIN();
-//   ADS.SDATAC();
-//   Serial.println("Complete");
-// }
+// A1 on Nano 33 BLE → P0.05
+#define PIN_GPIO_T4         (5)
+#define PORT_GPIO_T4        (0)
+
+void initTimer4(){
+  // Generates a periodic event using CC[0] (compare register)
+  // For a 1 MHz square wave, you need 2 million transitions per second
+  NRF_TIMER4->MODE = TIMER_MODE_MODE_Timer;
+  NRF_TIMER4->BITMODE = TIMER_BITMODE_BITMODE_16Bit;
+  NRF_TIMER4->SHORTS = TIMER_SHORTS_COMPARE0_CLEAR_Enabled << TIMER_SHORTS_COMPARE0_CLEAR_Pos;
+  NRF_TIMER4->PRESCALER = 0;
+  NRF_TIMER4->CC[0] = 16000000 / SAMPLES_PER_SECOND; // Needs prescaler set to 0 (1:1) 16MHz clock
+  NRF_TIMER4->TASKS_START = 1;
+}
+
+void initGPIOTE(){
+  // Configured to toggle a GPIO pin (here, P0.05 = A1) whenever triggered
+  NRF_GPIOTE->CONFIG[0] = ( GPIOTE_CONFIG_MODE_Task       << GPIOTE_CONFIG_MODE_Pos ) |
+                          ( GPIOTE_CONFIG_OUTINIT_Low     << GPIOTE_CONFIG_OUTINIT_Pos ) |
+                          ( GPIOTE_CONFIG_POLARITY_Toggle << GPIOTE_CONFIG_POLARITY_Pos ) |
+                          ( PORT_GPIO_T4                  << GPIOTE_CONFIG_PORT_Pos ) |
+                          ( PIN_GPIO_T4                   << GPIOTE_CONFIG_PSEL_Pos );
+}
+void initPPI(){
+  // Configure PPI channel with connection between TIMER->EVENTS_COMPARE[0] and GPIOTE->TASKS_OUT[0]
+  // Connects the TIMER4 compare event to the GPIOTE toggle task
+  NRF_PPI->CH[PPI_CHANNEL_T4].EEP = ( uint32_t )&NRF_TIMER4->EVENTS_COMPARE[0];
+  NRF_PPI->CH[PPI_CHANNEL_T4].TEP = ( uint32_t )&NRF_GPIOTE->TASKS_OUT[0];
+
+  // Enable PPI channel
+  NRF_PPI->CHENSET = ( 1UL << PPI_CHANNEL_T4 );
+}
+
 
 void setup() {
-  Serial.begin(115200);
-  while (!Serial);  
-  Serial.println("Start Setup");
+  // Initialise CLK
+  initTimer4();
+  initGPIOTE();
+  initPPI();
+
+  if (DEBUG_MODE) {
+    Serial.begin(9600);
+    while (!Serial); // wait for serial monitor to open
+  }
+  DEBUG_PRINTLN("Start Setup");
 
   pinMode(ADS_PWDN, OUTPUT);
   pinMode(ADS_START, OUTPUT);
   pinMode(ADS_RESET, OUTPUT);
-  pinMode(LED,OUTPUT);
-
-  // pinMode(LED1, OUTPUT);
-  // pinMode(LED2, OUTPUT);
-  // pinMode(LED3, OUTPUT);
-  // pinMode(BUTTON, INPUT);
-  // pinMode(NRF_RST, OUTPUT);
-
-  // digitalWrite(NRF_RST, LOW);
-  // digitalWrite(LED1, HIGH);
-  // digitalWrite(PSU_POS, HIGH);
-  // digitalWrite(PSU_NEG, HIGH);
-  // delay(100); // wait for PSUs to come UP
+  // pinMode(LED,OUTPUT);
+  pinMode(ADS_CLK, OUTPUT);
 
   digitalWrite(ADS_START, LOW);
   digitalWrite(ADS_PWDN, HIGH); // turn off power down mode
-  digitalWrite(ADS_RESET, HIGH);
-  digitalWrite(LED, HIGH);
-  delay(100); // delay for power-on-reset (Datasheet, pg. 48)
+  // digitalWrite(LED, LOW);
+  delay(500); // delay for power-on-reset (Datasheet, pg. 48)
 
   // reset pulse
   digitalWrite(ADS_RESET, LOW);
   digitalWrite(ADS_RESET, HIGH);
-  delay(1); // Wait for 18 tCLKs AKA 9 microseconds, we use 1 millisec
+  delay(50); // Wait for 18 tCLKs AKA 9 microseconds, we use 1 millisec
 
 
   ADS.BEGIN(); 
   ADS.SDATAC(); // device wakes up in RDATAC mode, so send stop signal
 
-  ADS.WREG(ADS129X_REG_CONFIG1, ADS129X_SAMPLERATE_256); // enable 8kHz sample-rate
+  ADS.WREG(ADS129X_REG_CONFIG1, ADS129X_SAMPLERATE_1024); // enable 8kHz sample-rate
   ADS.WREG(ADS129X_REG_CONFIG3, (1<<ADS129X_BIT_PD_REFBUF) | (1<<6)); // enable internal reference
   //ADS.WREG(ADS129X_REG_CONFIG2, (1<<ADS129X_BIT_INT_TEST) | ADS129X_TEST_FREQ_2HZ);
   
@@ -148,52 +171,64 @@ void setup() {
   ADS.RDATAC();
   ADS.START();
 
-  digitalWrite(LED, LOW);
-  Serial.println("COmplete Setup");
+  DEBUG_PRINTLN("COmplete Setup");
 }
+
+// void loop() {
+//   int drdyState = digitalRead(ADS_DRDY);  // Read the pin state
+  
+//   if (drdyState == LOW) {
+//     DEBUG_PRINTLN("DRDY is LOW - Data Ready");
+//   } else {
+//     DEBUG_PRINTLN("DRDY is HIGH - Data Not Ready");
+//   }
+
+//   // delay(10); // Polling interval (adjust as needed)
+// }
 
 void loop() {
   long buffer[9];
-  static unsigned long tLast;
-  if (millis()-tLast > 500) {
-    digitalWrite(LED, !digitalRead(LED));
-    tLast = millis();
-  }
+  // static unsigned long tLast;
+  // if (millis()-tLast > 500) {
+  //   digitalWrite(LED, !digitalRead(LED));
+  //   tLast = millis();
+  // }
   if (ADS.getData(buffer)) {
+    // digitalWrite(LED, !digitalRead(LED));
+    DEBUG_PRINTLN("Toggle LED");
     for (int channel = 1; channel < 9; channel++) {
       long value = buffer[channel];
 
-      // Debug: print readable value
-      Serial.print("CH");
-      Serial.print(channel);
-      Serial.print(": ");
-      Serial.println(value);
+      // // Debug: print readable value
+      // DEBUG_PRINT("CH");
+      // DEBUG_PRINT(channel);
+      // DEBUG_PRINT(": ");
+      // DEBUG_PRINTLN(value);
 
-      // Then send over BLE using Serial.write() (or a BLE characteristic)
-      byte valueBytes[3];
-      byte encoded[7];
-      byte packet[5];
+      // // Then send over BLE using Serial.write() (or a BLE characteristic)
+      // byte valueBytes[3];
+      // byte encoded[7];
+      // byte packet[5];
 
-      valueBytes[0] = (byte)(value >> 16);
-      valueBytes[1] = (byte)(value >> 8);
-      valueBytes[2] = (byte)(value);
+      // valueBytes[0] = (byte)(value >> 16);
+      // valueBytes[1] = (byte)(value >> 8);
+      // valueBytes[2] = (byte)(value);
 
-      encoded[0] = encode4B5B(LOW_NIBBLE(channel));
-      encoded[1] = encode4B5B(HIGH_NIBBLE(valueBytes[0]));
-      encoded[2] = encode4B5B(LOW_NIBBLE(valueBytes[0]));
-      encoded[3] = encode4B5B(HIGH_NIBBLE(valueBytes[1]));
-      encoded[4] = encode4B5B(LOW_NIBBLE(valueBytes[1]));
-      encoded[5] = encode4B5B(HIGH_NIBBLE(valueBytes[2]));
-      encoded[6] = encode4B5B(LOW_NIBBLE(valueBytes[2]));
+      // encoded[0] = encode4B5B(LOW_NIBBLE(channel));
+      // encoded[1] = encode4B5B(HIGH_NIBBLE(valueBytes[0]));
+      // encoded[2] = encode4B5B(LOW_NIBBLE(valueBytes[0]));
+      // encoded[3] = encode4B5B(HIGH_NIBBLE(valueBytes[1]));
+      // encoded[4] = encode4B5B(LOW_NIBBLE(valueBytes[1]));
+      // encoded[5] = encode4B5B(HIGH_NIBBLE(valueBytes[2]));
+      // encoded[6] = encode4B5B(LOW_NIBBLE(valueBytes[2]));
 
-      packet[0] = 0 | (encoded[0] >> 2);
-      packet[1] = (encoded[0] << 6) | (encoded[1] << 1) | (encoded[2] >> 4);
-      packet[2] = (encoded[2] << 4) | (encoded[3] >> 1);
-      packet[3] = (encoded[3] << 7) | (encoded[4] << 2) | (encoded[5] >> 3);
-      packet[4] = (encoded[5] << 5) | (encoded[6]);
+      // packet[0] = 0 | (encoded[0] >> 2);
+      // packet[1] = (encoded[0] << 6) | (encoded[1] << 1) | (encoded[2] >> 4);
+      // packet[2] = (encoded[2] << 4) | (encoded[3] >> 1);
+      // packet[3] = (encoded[3] << 7) | (encoded[4] << 2) | (encoded[5] >> 3);
+      // packet[4] = (encoded[5] << 5) | (encoded[6]);
 
       // Serial.write(packet, 5); // or send via BLE characteristic
     }
   }
-
 }

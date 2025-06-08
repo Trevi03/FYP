@@ -112,15 +112,15 @@ void ADS129X::RESET() {
  * Start/restart (synchronize) conversions.
  */
 void ADS129X::START() {
+#ifndef ADS129X_POLLING
+    attachInterrupt(DRDY, ADS129X_dataReadyISR, LOW);
+#endif
     SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE1));     
     digitalWrite(CS, LOW);
     SPI.transfer(ADS129X_CMD_START);
     delayMicroseconds(2);
-    digitalWrite(CS, HIGH);
+    // digitalWrite(CS, HIGH);
     SPI.endTransaction();    
-#ifndef ADS129X_POLLING
-    attachInterrupt(DRDY, ADS129X_dataReadyISR, FALLING);
-#endif
 }
 
 /**
@@ -134,7 +134,7 @@ void ADS129X::STOP() {
     digitalWrite(CS, LOW);
     SPI.transfer(ADS129X_CMD_STOP);
     delayMicroseconds(2);
-    digitalWrite(CS, HIGH);
+    // digitalWrite(CS, HIGH);
     SPI.endTransaction();
 }
 
@@ -146,7 +146,7 @@ void ADS129X::RDATAC() {
     digitalWrite(CS, LOW);
     SPI.transfer(ADS129X_CMD_RDATAC);
     delayMicroseconds(2);
-    digitalWrite(CS, HIGH);
+    // digitalWrite(CS, HIGH);
     delayMicroseconds(2); //must way at least 4 tCLK cycles before sending another command (Datasheet, pg. 39)
     SPI.endTransaction();    
 }
@@ -159,7 +159,7 @@ void ADS129X::SDATAC() {
     digitalWrite(CS, LOW);
     SPI.transfer(ADS129X_CMD_SDATAC); //SDATAC
     delayMicroseconds(2);
-    digitalWrite(CS, HIGH);
+    // digitalWrite(CS, HIGH);
     SPI.endTransaction();    
 }
 
@@ -313,33 +313,48 @@ void ADS129X_dataReadyISR() {
  * @return true when received data
  */
 boolean ADS129X::getData(long *buffer) {
-#ifndef ADS129X_POLLING
-    if (ADS129X_newData) {
-        ADS129X_newData = false;
-        for (int i = 0; i < 9; i++) {
-            buffer[i] = ADS129X_data[i];
-        }
-        return true;
-    }
-    return false;
-#else
+// #ifndef ADS129X_POLLING
+//     if (ADS129X_newData) {
+//         ADS129X_newData = false;
+//         for (int i = 0; i < 9; i++) {
+//             buffer[i] = ADS129X_data[i];
+//         }
+//         return true;
+//     }
+//     return false;
+// #else
     if (digitalRead(DRDY) == LOW) {
+        // Serial.println("Getdata");
         SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE1));             
         digitalWrite(CS, LOW);
         for(int i = 0; i<9; i++){
             long dataPacket = 0;
-            for(int j = 0; j<3; j++){
-                byte dataByte = SPI.transfer(0x00);
-                dataPacket = (dataPacket<<8) | dataByte;
-            }
+
+            uint8_t byte1 = SPI.transfer(0x00);
+            SPI.endTransaction();
+            SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE1));  
+            // Crashes here
+            uint8_t byte2 = SPI.transfer(0x00);
+            SPI.endTransaction();
+            SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE1));  
+            uint8_t byte3 = SPI.transfer(0x00);
+            // Serial.println("Getdata");
+            dataPacket = ((long)byte1 << 16) | ((long)byte2 << 8) | byte3;
+            
+            // for(int j = 0; j<3; j++){
+            //     byte dataByte = SPI.transfer(0x00);
+            //     dataPacket = (long)(dataPacket<<8) | dataByte;
+            // }
             buffer[i] = dataPacket;
+            SPI.endTransaction();
+            SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE1));  
         }
         digitalWrite(CS, HIGH);
         SPI.endTransaction();        
         return true;
     }
     return false;
-#endif
+// #endif
 }
 
 /**
